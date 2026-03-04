@@ -1,0 +1,16 @@
+# === LangChain Core ===
+langchain==0.3.20
+langchain-community==0.3.19
+langchain-openai>=0.3.0
+
+# === Vector Store ===
+faiss-cpu
+
+# === Carga de PDFs ===
+pypdf==5.4.0
+
+# === Configuración ===
+python-dotenv==1.1.0
+
+# === CLI interactivo ===
+rich==13.9.4

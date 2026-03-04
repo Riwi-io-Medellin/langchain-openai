@@ -1,0 +1,18 @@
+services:
+  # --- Aplicación RAG Multi-Agente con OpenAI ---
+  app:
+    build: .
+    container_name: langchain-openai-rag
+    volumes:
+      - ./docs:/app/docs # PDFs a procesar
+      - ./data:/app/data # Persistencia del índice FAISS
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OPENAI_EMBED_MODEL=${OPENAI_EMBED_MODEL:-text-embedding-3-small}
+      - DOCS_PATH=/app/docs
+      - FAISS_PATH=/app/data/faiss
+      - CHUNK_SIZE=${CHUNK_SIZE:-1000}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP:-200}
+    stdin_open: true
+    tty: true

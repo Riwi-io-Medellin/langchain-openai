@@ -1,0 +1,486 @@
+# 🧠 Prompt para Agente IA — Sistema Multi-Agente RAG con FAISS + OpenAI API
+
+## Contexto del Proyecto Base (referencia local)
+
+Existe un proyecto base que implementa un RAG **local** con Ollama + ChromaDB. Este nuevo proyecto es la **evolución remota**: usa **OpenAI API** como LLM/Embeddings en la nube, y **FAISS** como vector store local.
+
+### Stack actual (proyecto base local — NO modificar, solo referencia)
+
+| Componente | Tecnología actual (local) | → Nueva tecnología (remoto) |
+|---|---|---|
+| **LLM** | Llama3 via Ollama | **OpenAI GPT-4o / GPT-3.5-turbo** |
+| **Embeddings** | nomic-embed-text via Ollama | **OpenAI text-embedding-ada-002** |
+| **Vector Store** | ChromaDB | **FAISS (local)** |
+| **Framework** | LangChain | LangChain (misma versión) |
+| **Infra** | Docker Compose + Ollama | Docker Compose (**sin Ollama**) |
+
+### Estructura actual del proyecto base
+
+```
+.
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+├── .env.example
+├── docs/                    # PDFs a procesar
+├── data/                    # Vector store persistido
+└── app/
+    ├── __init__.py
+    ├── main.py              # Punto de entrada + chat interactivo CLI
+    ├── config.py            # Configuración centralizada (.env)
+    └── rag/
+        ├── __init__.py
+        ├── loader.py        # Carga PDFs con PyPDFLoader
+        ├── splitter.py      # RecursiveCharacterTextSplitter (chunks)
+        ├── embeddings.py    # OllamaEmbeddings (nomic-embed-text)
+        ├── vectorstore.py   # ChromaDB (crear/cargar desde disco)
+        └── chain.py         # Cadena RAG con LCEL (retriever + prompt + LLM)
+```
+
+### Código fuente actual (referencia completa)
+
+#### [app/config.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/config.py)
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3")
+OLLAMA_EMBED_MODEL: str = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+DOCS_PATH: str = os.getenv("DOCS_PATH", "./docs")
+CHROMA_PATH: str = os.getenv("CHROMA_PATH", "./data/chroma")
+CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "1000"))
+CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
+```
+
+#### [app/rag/embeddings.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/rag/embeddings.py)
+```python
+from langchain_ollama import OllamaEmbeddings
+from app.config import OLLAMA_BASE_URL, OLLAMA_EMBED_MODEL
+
+def get_embeddings() -> OllamaEmbeddings:
+    return OllamaEmbeddings(
+        model=OLLAMA_EMBED_MODEL,
+        base_url=OLLAMA_BASE_URL,
+    )
+```
+
+#### [app/rag/loader.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/rag/loader.py)
+```python
+import os
+from langchain_community.document_loaders import PyPDFLoader
+from app.config import DOCS_PATH
+
+def load_pdfs() -> list:
+    docs = []
+    pdf_files = [f for f in os.listdir(DOCS_PATH) if f.endswith(".pdf")]
+    if not pdf_files:
+        return docs
+    for filename in pdf_files:
+        filepath = os.path.join(DOCS_PATH, filename)
+        loader = PyPDFLoader(filepath)
+        docs.extend(loader.load())
+    return docs
+```
+
+#### [app/rag/splitter.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/rag/splitter.py)
+```python
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from app.config import CHUNK_SIZE, CHUNK_OVERLAP
+
+def split_documents(docs: list) -> list:
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=["\n\n", "\n", " ", ""],
+    )
+    return splitter.split_documents(docs)
+```
+
+#### [app/rag/vectorstore.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/rag/vectorstore.py)
+```python
+import os
+from langchain_community.vectorstores import Chroma
+from app.config import CHROMA_PATH
+from app.rag.embeddings import get_embeddings
+
+def create_vectorstore(chunks: list) -> Chroma:
+    if os.path.exists(CHROMA_PATH):
+        import shutil
+        shutil.rmtree(CHROMA_PATH)
+    embeddings = get_embeddings()
+    batch_size = 5
+    vectorstore = None
+    for i in range(0, len(chunks), batch_size):
+        batch = chunks[i:i + batch_size]
+        if vectorstore is None:
+            vectorstore = Chroma.from_documents(
+                documents=batch, embedding=embeddings,
+                persist_directory=CHROMA_PATH,
+            )
+        else:
+            vectorstore.add_documents(batch)
+    return vectorstore
+
+def load_vectorstore() -> Chroma | None:
+    if not os.path.exists(CHROMA_PATH):
+        return None
+    embeddings = get_embeddings()
+    vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
+    count = vectorstore._collection.count()
+    if count == 0:
+        return None
+    return vectorstore
+```
+
+#### [app/rag/chain.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/rag/chain.py)
+```python
+from langchain_ollama import ChatOllama
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema.runnable import RunnablePassthrough
+from langchain.schema.output_parser import StrOutputParser
+from app.config import OLLAMA_BASE_URL, OLLAMA_MODEL
+
+RAG_PROMPT = ChatPromptTemplate.from_template("""
+Contexto:
+{context}
+
+Pregunta: {question}
+
+Responde basándote solo en el contexto anterior. Sé breve y directo.
+Respuesta:
+""")
+
+def format_docs(docs: list) -> str:
+    return "\n\n---\n\n".join(doc.page_content for doc in docs)
+
+def build_rag_chain(vectorstore):
+    retriever = vectorstore.as_retriever(
+        search_type="similarity", search_kwargs={"k": 2},
+    )
+    llm = ChatOllama(
+        model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL,
+        temperature=0.3, num_predict=256,
+    )
+    chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | RAG_PROMPT | llm | StrOutputParser()
+    )
+    return chain
+```
+
+#### [app/main.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/main.py)
+```python
+import sys, time
+from rich.console import Console
+from rich.panel import Panel
+from rich.markdown import Markdown
+from app.rag.loader import load_pdfs
+from app.rag.splitter import split_documents
+from app.rag.vectorstore import create_vectorstore, load_vectorstore
+from app.rag.chain import build_rag_chain
+
+console = Console()
+
+def wait_for_ollama():
+    import urllib.request
+    from app.config import OLLAMA_BASE_URL
+    for attempt in range(30):
+        try:
+            urllib.request.urlopen(f"{OLLAMA_BASE_URL}/api/tags", timeout=2)
+            return True
+        except Exception:
+            time.sleep(2)
+    return False
+
+def index_documents():
+    docs = load_pdfs()
+    if not docs: return None
+    chunks = split_documents(docs)
+    return create_vectorstore(chunks)
+
+def chat_loop(chain):
+    while True:
+        try:
+            question = console.input("\n[bold cyan]❓ Pregunta:[/] ")
+        except (KeyboardInterrupt, EOFError):
+            break
+        if question.strip().lower() in ("salir", "exit", "quit", "q"):
+            break
+        if not question.strip(): continue
+        try:
+            answer = chain.invoke(question)
+            console.print(Panel(Markdown(answer), title="🧠 Respuesta", border_style="green"))
+        except Exception as e:
+            console.print(f"❌ Error: {e}", style="red")
+
+def main():
+    if not wait_for_ollama(): sys.exit(1)
+    vectorstore = load_vectorstore()
+    if vectorstore is None:
+        vectorstore = index_documents()
+        if vectorstore is None: sys.exit(1)
+    chain = build_rag_chain(vectorstore)
+    chat_loop(chain)
+
+if __name__ == "__main__":
+    main()
+```
+
+#### [requirements.txt](file:///home/sebastian-agudelo/Documentos/code/langchain/requirements.txt)
+```
+langchain==0.3.20
+langchain-community==0.3.19
+langchain-ollama==0.3.2
+chromadb==0.6.3
+pypdf==5.4.0
+python-dotenv==1.1.0
+rich==13.9.4
+```
+
+#### [docker-compose.yml](file:///home/sebastian-agudelo/Documentos/code/langchain/docker-compose.yml)
+```yaml
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: ollama-pull
+    depends_on:
+      - ollama
+    entrypoint: >
+      sh -c "
+        sleep 10 &&
+        ollama pull llama3.2:1b &&
+        ollama pull nomic-embed-text &&
+        touch /tmp/models-ready &&
+        sleep infinity
+      "
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/models-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  app:
+    build: .
+    container_name: langchain-rag
+    depends_on:
+      ollama-pull:
+        condition: service_healthy
+    volumes:
+      - ./docs:/app/docs
+      - ./data:/app/data
+    environment:
+      - OLLAMA_MODEL=llama3.2:1b
+      - OLLAMA_EMBED_MODEL=nomic-embed-text
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - DOCS_PATH=/app/docs
+      - CHROMA_PATH=/app/data/chroma
+      - CHUNK_SIZE=500
+      - CHUNK_OVERLAP=50
+    stdin_open: true
+    tty: true
+
+volumes:
+  ollama_data:
+```
+
+---
+
+## ⚡ Lo que necesito que implementes
+
+### Objetivo
+
+Evolucionar este sistema RAG básico a un **sistema multi-agente inteligente** que usa **OpenAI API** (remoto) en vez de Ollama (local), con FAISS como vector store y un sistema de agentes con herramientas especializadas.
+
+> **IMPORTANTE:** Este proyecto es la versión "remota/cloud" del sistema. El repositorio original con Ollama se mantiene intacto como ejemplo de uso local. Este nuevo proyecto demuestra el uso con una API externa (OpenAI).
+
+### 1. 🔄 Migrar de Ollama a OpenAI API
+
+**Requerimiento:** Reemplazar Ollama por OpenAI como proveedor de LLM y Embeddings.
+
+**LLM — Reemplazar `ChatOllama` por `ChatOpenAI`:**
+```python
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model="gpt-4o-mini",       # O "gpt-3.5-turbo" para menor costo
+    temperature=0.3,
+    api_key=os.getenv("OPENAI_API_KEY"),
+)
+```
+
+**Embeddings — Reemplazar `OllamaEmbeddings` por `OpenAIEmbeddings`:**
+```python
+from langchain_openai import OpenAIEmbeddings
+
+embeddings = OpenAIEmbeddings(
+    model="text-embedding-3-small",   # Modelo recomendado actual
+    api_key=os.getenv("OPENAI_API_KEY"),
+)
+```
+
+**Variable de entorno nueva:**
+```
+OPENAI_API_KEY=sk-...tu-api-key-aquí...
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_EMBED_MODEL=text-embedding-3-small
+```
+
+### 2. 🔄 Migrar de ChromaDB a FAISS como vector store
+
+**Requerimiento:** Reemplazar ChromaDB por FAISS (`langchain_community.vectorstores.FAISS`).
+
+- FAISS es más rápido para búsqueda local y no requiere servidor
+- Persistir el índice FAISS en disco (`faiss.save_local()` / `FAISS.load_local()`)
+- Mantener la misma carpeta `data/` para persistencia
+- Usar `allow_dangerous_deserialization=True` al cargar
+
+```python
+from langchain_community.vectorstores import FAISS
+```
+
+### 3. 🧠 Agregar Memoria Conversacional
+
+**Requerimiento:** Implementar `ConversationBufferMemory` para que el chat mantenga contexto entre preguntas.
+
+- Actualmente cada pregunta es independiente (no hay historial)
+- El sistema debe recordar las preguntas y respuestas anteriores dentro de la sesión
+
+```python
+from langchain.memory import ConversationBufferMemory
+```
+
+### 4. 🤖 Implementar Sistema Multi-Agente con Tools
+
+**Requerimiento:** Transformar la cadena RAG simple en un **agente con herramientas (tools)** usando `initialize_agent`.
+
+Un **agente orquestador** elige qué herramienta/agente especializado usar según la pregunta del usuario:
+
+| Agente/Tool | Función | Descripción |
+|---|---|---|
+| **Agente RAG/Docs** | Buscar en documentos | Usa FAISS para responder sobre el contenido de los PDFs indexados |
+| **Agente PQL/SQL** | Consultas a base de datos | Genera y ejecuta consultas SQL (simulado/mock — devuelve respuesta descriptiva de qué consultaría) |
+| **Agente K8s** | Operaciones Kubernetes | Gestiona operaciones K8s (simulado/mock — devuelve qué comandos kubectl ejecutaría) |
+
+```python
+from langchain.agents import initialize_agent, Tool
+```
+
+**Los agentes PQL y K8s son mock/simulados**: funciones que reciben la pregunta y devuelven una respuesta realista explicando qué harían si tuvieran acceso real.
+
+### 5. 🏗️ Arquitectura Multi-Agente (diagrama de referencia)
+
+```
+[Bot Teams] → [Bot Service] → [WAF] → [Sistema Multi-Agente LangChain]
+                                                 ↓
+                                    ┌────────────┼────────────┐
+                                    ↓            ↓            ↓
+                             [Agente K8s]  [Agente PQL]  [Agente DOC]
+                             (usa LLM)    (usa LLM)    (usa LLM)
+                                    │            │            │
+                                    ↓            ↓            ↓
+                              [kubectl]   [PostgreSQL BD] [FAISS Local]
+                                                          (docs/RAG)
+                                                             ↑
+                                                    OpenAI Embeddings
+                                                    (text-embedding-3-small)
+```
+
+### 6. 📂 Estructura de archivos esperada
+
+```
+app/
+├── __init__.py
+├── main.py                  # Punto de entrada (sin wait_for_ollama)
+├── config.py                # Config con OPENAI_API_KEY, FAISS_PATH, etc.
+└── rag/
+    ├── __init__.py
+    ├── loader.py            # (sin cambios)
+    ├── splitter.py          # (sin cambios)
+    ├── embeddings.py        # ⚡ MIGRADO de Ollama a OpenAIEmbeddings
+    ├── vectorstore.py       # ⚡ MIGRADO de ChromaDB a FAISS
+    ├── chain.py             # ⚡ MIGRADO de ChatOllama a ChatOpenAI + memoria
+    ├── memory.py            # 🆕 ConversationBufferMemory
+    ├── tools.py             # 🆕 Definición de Tools (RAG, PQL mock, K8s mock)
+    └── agents.py            # 🆕 Agente orquestador con initialize_agent
+```
+
+### 7. 📋 Resumen de cambios por archivo
+
+| Archivo | Acción | Descripción |
+|---|---|---|
+| [config.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/config.py) | MODIFICAR | Agregar `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_EMBED_MODEL`, `FAISS_PATH`. Remover variables de Ollama |
+| [embeddings.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/rag/embeddings.py) | REESCRIBIR | Migrar de `OllamaEmbeddings` a `OpenAIEmbeddings` |
+| [vectorstore.py](file:///home/sebastian-agudelo/Documentos/code/langchain/test-vectorstore.py) | REESCRIBIR | Migrar de ChromaDB a FAISS |
+| [chain.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/rag/chain.py) | REESCRIBIR | Migrar de `ChatOllama` a `ChatOpenAI` + integrar memoria |
+| `memory.py` | CREAR | `ConversationBufferMemory` |
+| `tools.py` | CREAR | Tools: RAG search, PQL mock, K8s mock |
+| `agents.py` | CREAR | Agente orquestador con `initialize_agent` |
+| [main.py](file:///home/sebastian-agudelo/Documentos/code/langchain/app/main.py) | MODIFICAR | Quitar [wait_for_ollama](file:///home/sebastian-agudelo/Documentos/code/langchain/app/main.py#17-33), verificar `OPENAI_API_KEY`, usar agente |
+| [requirements.txt](file:///home/sebastian-agudelo/Documentos/code/langchain/requirements.txt) | MODIFICAR | Agregar `langchain-openai`, `faiss-cpu`. Quitar `chromadb`, `langchain-ollama` |
+| [Dockerfile](file:///home/sebastian-agudelo/Documentos/code/langchain/Dockerfile) | MODIFICAR | Simplificar (ya no necesita build-essential de ChromaDB) |
+| [docker-compose.yml](file:///home/sebastian-agudelo/Documentos/code/langchain/docker-compose.yml) | MODIFICAR | Quitar servicios Ollama, inyectar `OPENAI_API_KEY` |
+| [.env.example](file:///home/sebastian-agudelo/Documentos/code/langchain/.env.example) | MODIFICAR | Nuevas variables OpenAI, quitar variables Ollama |
+
+### 8. 📦 Dependencias
+
+**Nuevo [requirements.txt](file:///home/sebastian-agudelo/Documentos/code/langchain/requirements.txt):**
+```
+# === LangChain Core ===
+langchain==0.3.20
+langchain-community==0.3.19
+langchain-openai>=0.3.0         # 🆕 OpenAI integration
+
+# === Vector Store ===
+faiss-cpu                        # 🆕 Reemplaza chromadb
+
+# === Carga de PDFs ===
+pypdf==5.4.0
+
+# === Configuración ===
+python-dotenv==1.1.0
+
+# === CLI interactivo ===
+rich==13.9.4
+```
+
+**Removidos:** `chromadb`, `langchain-ollama`
+
+### 9. ✅ Criterios de aceptación
+
+1. El sistema arranca **sin Ollama** (solo necesita `OPENAI_API_KEY`)
+2. Los PDFs se indexan en **FAISS** con **OpenAI Embeddings**
+3. El índice FAISS persiste en disco (`data/faiss/`) y se recarga al reiniciar
+4. El chat usa **ChatOpenAI (GPT-4o-mini)** como LLM
+5. El chat mantiene **memoria conversacional** (recuerda preguntas anteriores)
+6. El **agente orquestador** delega correctamente:
+   - Preguntas sobre documentos → Tool RAG (FAISS)
+   - Preguntas sobre SQL/base de datos → Tool PQL (mock)
+   - Preguntas sobre Kubernetes/deploy → Tool K8s (mock)
+7. Tools mock responden de forma coherente y descriptiva
+8. Interfaz CLI con Rich sigue funcionando
+9. Docker Compose funciona **sin contenedores de Ollama**
+10. **NO hay dependencias de Azure ni de Ollama**
+
+### 10. 📌 Notas importantes
+
+- **API Key:** El `OPENAI_API_KEY` se pasa por variable de entorno. NUNCA hardcodear en el código.
+- **Modelos recomendados:** `gpt-4o-mini` (LLM, balance costo/calidad) y `text-embedding-3-small` (embeddings, económico).
+- **FAISS:** Usar `faiss-cpu`. El índice persiste en `./data/faiss/`.
+- **Docker simplificado:** El [docker-compose.yml](file:///home/sebastian-agudelo/Documentos/code/langchain/docker-compose.yml) ya no necesita Ollama — solo el contenedor de la app con `OPENAI_API_KEY` inyectado.
+- **Mock agents:** Los agentes K8s y PQL son simulaciones educativas con respuestas realistas.
+- **Compatibilidad:** Python 3.12, Docker Compose.
+- **Idioma:** Prompts y mensajes UI en español.
+- **Propósito educativo:** Este repo demuestra el uso de LLM remoto (OpenAI API) vs. el repo original que demuestra LLM local (Ollama).
