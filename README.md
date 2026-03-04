@@ -12,7 +12,7 @@ Proyecto que implementa un sistema **RAG Multi-Agente** usando IA remota (OpenAI
 | **Memoria** | ConversationBufferMemory |
 | **Infraestructura** | Docker Compose |
 
-> 📌 **Versión remota**: Este proyecto usa OpenAI API (nube). Para la versión local con Ollama, ver el [repo langchain](../langchain/).
+> 📌 **Versión remota**: Este proyecto usa OpenAI API (nube). Para la versión local con Ollama, ver el [repo langchain](https://github.com/illuminaki/langchain).
 
 ## Estructura del proyecto
 
