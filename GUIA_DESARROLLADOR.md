@@ -56,7 +56,93 @@ Si un nuevo Dev entra al proyecto, la curva de lectura del código debería ser 
 
 ---
 
-## 4. Recomendaciones Rápidas para Operar
+## 5. Arquitectura del Código: Paso a Paso
+
+Para entender en detalle cómo LangChain orquesta todo, aquí te pasamos las secciones núcleo del proyecto:
+
+### A. Preparando la Base Intelectual (RAG)
+Todo empieza convirtiendo los PDFs en conocimiento matemático para la IA.
+
+```python
+# app/rag/vectorstore.py
+from langchain_community.vectorstores import FAISS
+from app.rag.embeddings import get_embeddings
+
+def create_vectorstore(chunks: list) -> FAISS:
+    # 1. Obtenemos el traductor de texto->números de OpenAI
+    embeddings = get_embeddings()
+    
+    # 2. FAISS toma cada chunk de texto y lo incrusta en el espacio vectorial
+    vectorstore = FAISS.from_documents(chunks, embeddings)
+    
+    # 3. Guardamos esto en el disco duro para no volver a gastar créditos
+    vectorstore.save_local("./data/faiss")
+    return vectorstore
+```
+
+### B. Definiendo las Herramientas (Tools)
+El agente no hace nada mágico por sí solo, LangChain le pasa "cajas de herramientas". Una herramienta no es más que una función de Python envuelta.
+
+```python
+# app/rag/tools.py
+from langchain.agents import Tool
+
+def create_rag_tool(vectorstore) -> Tool:
+    rag_chain = build_rag_chain(vectorstore)
+    
+    return Tool(
+        name="Buscar_Documentos",
+        # Al ejecutar la tool, se llama a esta función:
+        func=lambda q: rag_chain.invoke(q),
+        # ESTO ES CRÍTICO: el LLM lee esta descripción para decidir si usa la herramienta o no
+        description="Úsala siempre que el usuario pregunte sobre proyectos (como Cafetech), manuales..."
+    )
+```
+
+### C. El Cerebro (El Agente Orquestador)
+Esta es la función nuclear del proyecto. Aquí unimos a OpenAI, la Memoria y las Herramientas.
+
+```python
+# app/rag/agents.py
+from langchain.agents import initialize_agent, AgentType
+
+def create_agent(vectorstore):
+    llm = get_llm() # Nuestro modelo ChatOpenAI
+    tools = create_all_tools(vectorstore)
+    memory = create_memory() # ConversationBufferMemory
+
+    agent = initialize_agent(
+        tools=tools,
+        llm=llm,
+        # Este flag le dice a LangChain: "Usa el formato ReAct (Reason+Act) pero conversacional"
+        agent=AgentType.CONVERSATIONAL_REACT_DESCRIPTION,
+        memory=memory,
+        # Si la IA escupe JSON con formato malo, LangChain lo arregla en lugar de crashear
+        handle_parsing_errors=True,
+        agent_kwargs={"prefix": AGENT_SYSTEM_PREFIX} # Reglas de comportamiento estrictas
+    )
+    return agent
+```
+
+### D. El Bucle Infinito del Usuario
+Cuando corres la app, simplemente entramos en un `while True` que le pasa el input del usuario al `agent.invoke()`.
+
+```python
+# app/main.py
+while True:
+    question = console.input("[bold cyan]❓ Pregunta:[/] ")
+    if question == 'salir': break
+
+    # Aquí el Agente hace todo el trabajo pesado:
+    # Piensa -> Selecciona Tool -> Busca en FAISS -> Combina la respuesta
+    answer = agent.invoke({"input": question})
+    
+    print(answer.get("output"))
+```
+
+---
+
+## 6. Recomendaciones Rápidas para Operar
 
 1. **Si quieres hacer más inteligente al Bot**: No toques la infraestructura ni LangChain directamente. Primero vete al prompt del agente (`app/rag/agents.py`) o re-escribe la descripción de las herramientas en (`app/rag/tools.py`). El LLM lee las descripciones de las funciones en `tools.py` para decidir si usarlas o no.
 2. **Si el agente deja de responder con información del documento**: Suele ser un problema en el `chunking`. Ve a `app/config.py` y revisa los valores `CHUNK_SIZE` y `CHUNK_OVERLAP`. Son las "tijeras" que cortan las hojas en pedacitos antes de convertirlas a vectores.
