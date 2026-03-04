@@ -147,3 +147,39 @@ while True:
 1. **Si quieres hacer más inteligente al Bot**: No toques la infraestructura ni LangChain directamente. Primero vete al prompt del agente (`app/rag/agents.py`) o re-escribe la descripción de las herramientas en (`app/rag/tools.py`). El LLM lee las descripciones de las funciones en `tools.py` para decidir si usarlas o no.
 2. **Si el agente deja de responder con información del documento**: Suele ser un problema en el `chunking`. Ve a `app/config.py` y revisa los valores `CHUNK_SIZE` y `CHUNK_OVERLAP`. Son las "tijeras" que cortan las hojas en pedacitos antes de convertirlas a vectores.
 3. **Persistencia**: FAISS carga los datos rapidísimo y cuando se termina, los deja en disco local (`data/faiss/index.faiss`). Si borras los archivos en `data/` o si pones PDFs nuevos en `docs/`, debes reiniciar la app para que vuelva a crear el index de lo contrario usará la caché vectorial.
+
+---
+
+## 🔥 7. La Verdadera "Magia" del Sistema (Arquitectura Profunda)
+
+Para dominar este proyecto y llevarlo a producción masiva, no necesitas ser un experto en LangChain; necesitas entender las **implicaciones técnicas** de estas 4 piezas críticas. Si algo se rompe, el problema estará en una de estas:
+
+### 1️⃣ Chunking Semántico (Más Allá de FAISS)
+FAISS no busca palabras, busca **similitud semántica matemática**. Si tu `CHUNK_SIZE` es muy pequeño o el `CHUNK_OVERLAP` (solapamiento) es de cero, los "trozos" de texto pierden contexto.
+> 💡 *Implicación:* Si el texto original dice "...final. Cafetech es..." y cortas justo en el punto, pierdes continuidad. El *overlap* existe para que las ideas se "peguen". Si FAISS devuelve tonterías, el problema no es la base de datos, es tu estrategia de corte.
+
+*Nota de Producción:* FAISS en memoria es genial para testing (hasta unos 500k chunks / ~3GB RAM). Para escalar a millones de documentos, tendrías que migrar la interfaz de FAISS a una base de datos vectorial externa como Pinecone o Qdrant.
+
+### 2️⃣ Diseño Conductual de Herramientas (Tools)
+El código `description="Úsala siempre que..."` en `app/rag/tools.py` es la pieza de ingeniería más subestimada. El LLM **lee** esa descripción. Si la descripción es ambigua, el Agente decidirá no usar el RAG e inventar la respuesta de memoria.
+> 💡 *Implicación:* Si el bot dice "No sé" o ignora los PDFs, el 90% de las veces no es un bug de código, es un *bug verbal* en la descripción de la Tool.
+
+### 3️⃣ El Verdadero Cerebro (`AGENT_SYSTEM_PREFIX`)
+Las instrucciones que le pasamos al Agente controlan sus **alucinaciones**. 
+> 💡 *Implicación:* Si tu prompt no dice explícitamente *"Si no encuentras información en las herramientas di que no sabes"*, el LLM va a inventar datos para agradar al usuario. Un prefijo robusto y estricto reduce dramáticamente el comportamiento errático en producción.
+
+### 4️⃣ El Tipo de Agente (`CONVERSATIONAL_REACT_DESCRIPTION`)
+El patrón **ReAct (Reason + Act)** significa que el agente sigue un bucle eterno de: Pensamiento $\rightarrow$ Acción $\rightarrow$ Observación $\rightarrow$ Respuesta.
+Este tipo de agente toma decisiones *dinámicas* y es muy flexible, pero al llevar a producción real debes saber que es **menos determinista** (puede que a veces resuelva distinto).
+> 💡 *Implicación:* Si necesitas precisión militar, deberías abandonar este agente ReAct y pasar a uno de *Structured Chat* o de llamadas obligatorias a funciones.
+
+---
+
+## ⚠️ 8. Riesgos Silenciosos al Pasar a Producción
+
+Si este es el inicio de tu proyecto empresarial, ten cuidado con estas trampas:
+
+1. **Incompatibilidad de Vectores**: Si cambias el modelo de Embeddings (ej. pasas a uno más barato), **debes borrar la carpeta `data/faiss/`**. Un nuevo modelo escupe vectores de dimensiones diferentes, y FAISS crasheará.
+2. **Explosión de Ventana de Contexto**: Si FAISS recupera 20 chunks para ser súper preciso, quizá te pases del límite de "Tokens" permitidos por GPT-4o-mini en una sola llamada y reviente la API.
+3. **Memoria Infinita**: Usamos `ConversationBufferMemory` que guarda TODO el historial. En producción con un usuario intenso, el chat crecerá tanto que consumirá todo el presupuesto de OpenAI en un solo mensaje. *Solución:* Usar `ConversationSummaryMemory` (que resume el chat antiguo) o `ConversationBufferWindowMemory` (que solo recuerda los últimos K mensajes).
+4. **Desacoplamiento Obligatorio**: Hoy el script indexa en FAISS y luego levanta el chat. En vida real, la ingesta (lectura de PDFs) debe ser un proceso Backend/CronJob aislado, y el Agente debe vivir detrás de una API REST.
