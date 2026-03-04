@@ -150,32 +150,32 @@ while True:
 
 ---
 
-## 🔥 7. La Verdadera "Magia" del Sistema (Arquitectura Profunda)
+## 7. La Verdadera "Magia" del Sistema (Arquitectura Profunda)
 
 Para dominar este proyecto y llevarlo a producción masiva, no necesitas ser un experto en LangChain; necesitas entender las **implicaciones técnicas** de estas 4 piezas críticas. Si algo se rompe, el problema estará en una de estas:
 
-### 1️⃣ Chunking Semántico (Más Allá de FAISS)
+### 1. Chunking Semántico (Más Allá de FAISS)
 FAISS no busca palabras, busca **similitud semántica matemática**. Si tu `CHUNK_SIZE` es muy pequeño o el `CHUNK_OVERLAP` (solapamiento) es de cero, los "trozos" de texto pierden contexto.
-> 💡 *Implicación:* Si el texto original dice "...final. Cafetech es..." y cortas justo en el punto, pierdes continuidad. El *overlap* existe para que las ideas se "peguen". Si FAISS devuelve tonterías, el problema no es la base de datos, es tu estrategia de corte.
+> *Implicación:* Si el texto original dice "...final. Cafetech es..." y cortas justo en el punto, pierdes continuidad. El *overlap* existe para que las ideas se "peguen". Si FAISS devuelve tonterías, el problema no es la base de datos, es tu estrategia de corte.
 
 *Nota de Producción:* FAISS en memoria es genial para testing (hasta unos 500k chunks / ~3GB RAM). Para escalar a millones de documentos, tendrías que migrar la interfaz de FAISS a una base de datos vectorial externa como Pinecone o Qdrant.
 
-### 2️⃣ Diseño Conductual de Herramientas (Tools)
+### 2. Diseño Conductual de Herramientas (Tools)
 El código `description="Úsala siempre que..."` en `app/rag/tools.py` es la pieza de ingeniería más subestimada. El LLM **lee** esa descripción. Si la descripción es ambigua, el Agente decidirá no usar el RAG e inventar la respuesta de memoria.
-> 💡 *Implicación:* Si el bot dice "No sé" o ignora los PDFs, el 90% de las veces no es un bug de código, es un *bug verbal* en la descripción de la Tool.
+> *Implicación:* Si el bot dice "No sé" o ignora los PDFs, el 90% de las veces no es un bug de código, es un *bug verbal* en la descripción de la Tool.
 
-### 3️⃣ El Verdadero Cerebro (`AGENT_SYSTEM_PREFIX`)
+### 3. El Verdadero Cerebro (`AGENT_SYSTEM_PREFIX`)
 Las instrucciones que le pasamos al Agente controlan sus **alucinaciones**. 
-> 💡 *Implicación:* Si tu prompt no dice explícitamente *"Si no encuentras información en las herramientas di que no sabes"*, el LLM va a inventar datos para agradar al usuario. Un prefijo robusto y estricto reduce dramáticamente el comportamiento errático en producción.
+> *Implicación:* Si tu prompt no dice explícitamente *"Si no encuentras información en las herramientas di que no sabes"*, el LLM va a inventar datos para agradar al usuario. Un prefijo robusto y estricto reduce dramáticamente el comportamiento errático en producción.
 
-### 4️⃣ El Tipo de Agente (`CONVERSATIONAL_REACT_DESCRIPTION`)
+### 4. El Tipo de Agente (`CONVERSATIONAL_REACT_DESCRIPTION`)
 El patrón **ReAct (Reason + Act)** significa que el agente sigue un bucle eterno de: Pensamiento $\rightarrow$ Acción $\rightarrow$ Observación $\rightarrow$ Respuesta.
 Este tipo de agente toma decisiones *dinámicas* y es muy flexible, pero al llevar a producción real debes saber que es **menos determinista** (puede que a veces resuelva distinto).
-> 💡 *Implicación:* Si necesitas precisión militar, deberías abandonar este agente ReAct y pasar a uno de *Structured Chat* o de llamadas obligatorias a funciones.
+> *Implicación:* Si necesitas precisión militar, deberías abandonar este agente ReAct y pasar a uno de *Structured Chat* o de llamadas obligatorias a funciones.
 
 ---
 
-## ⚠️ 8. Riesgos Silenciosos al Pasar a Producción
+## 8. Riesgos Silenciosos al Pasar a Producción
 
 Si este es el inicio de tu proyecto empresarial, ten cuidado con estas trampas:
 
