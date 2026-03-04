@@ -102,23 +102,23 @@ graph TD
 
     User((👤 Usuario)):::user
 
-    subgraph LLM & Memoria
+    subgraph LLM ["LLM & Memoria"]
         Agent["🤖 Agente Orquestador<br>(LangChain ReAct)"]:::agent
         Mem["🧠 Memoria<br>(ConversationBuffer)"]:::agent
         Agent <--> Mem
     end
 
-    subgraph Cloud API
+    subgraph CloudAPI ["Cloud API"]
         OAI["☁️ OpenAI API<br>(GPT-4o-mini)"]:::ext
     end
 
-    subgraph Herramientas (Tools)
+    subgraph Herramientas ["Herramientas (Tools)"]
         T_RAG["🔍 Herramienta RAG<br>(Buscar en Documentos)"]:::tool
         T_SQL["🗄️ Herramienta SQL<br>(Mock PostgreSQL)"]:::tool
         T_K8S["⎈ Herramienta K8s<br>(Mock Kubernetes)"]:::tool
     end
 
-    subgraph Almacenamiento
+    subgraph Almacenamiento ["Almacenamiento"]
         FAISS[("🗂️ FAISS Vector Store<br>(Embeddings locales)")]:::data
         PDFs["📄 Documentos PDF<br>(Directorio docs/)"]:::data
     end
